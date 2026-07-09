@@ -21,14 +21,23 @@ import './App.css'
 import type { FormEvent, ReactNode } from 'react'
 import type { AnswerRecord, AppData, AppUser, DocumentItem, GrantLead, GrantStatus, Priority, TaskItem } from './types'
 import {
-  createAccount,
+  createAccount as createLocalAccount,
   getCurrentUser,
   loadWorkspaceData,
   normalizeGrant,
-  saveWorkspaceData,
-  signIn,
-  signOut,
+  saveWorkspaceData as saveLocalWorkspaceData,
+  signIn as signInLocal,
+  signOut as signOutLocal,
 } from './lib/localStore'
+import {
+  createSupabaseAccount,
+  getSupabaseCurrentUser,
+  isSupabaseConfigured,
+  loadSupabaseData,
+  saveSupabaseData,
+  signInSupabase,
+  signOutSupabase,
+} from './lib/supabaseStore'
 
 const statuses: GrantStatus[] = [
   'Prospect',
@@ -45,24 +54,81 @@ const statuses: GrantStatus[] = [
 const priorities: Priority[] = ['High', 'Medium', 'Low']
 
 function App() {
+  const [loading, setLoading] = useState(true)
   const [user, setUser] = useState<AppUser | null>(() => getCurrentUser())
   const [data, setData] = useState<AppData | null>(() => {
     const currentUser = getCurrentUser()
     return currentUser ? loadWorkspaceData(currentUser.workspaceId) : null
   })
   const [activeView, setActiveView] = useState<'grants' | 'answers' | 'documents' | 'tasks' | 'settings'>('grants')
+  const [saveError, setSaveError] = useState('')
 
   useEffect(() => {
-    if (user) {
-      setData(loadWorkspaceData(user.workspaceId))
-    } else {
-      setData(null)
+    let canceled = false
+
+    async function boot() {
+      if (isSupabaseConfigured()) {
+        const remoteUser = await getSupabaseCurrentUser()
+        if (!canceled && remoteUser) {
+          setUser(remoteUser)
+          setData(await loadSupabaseData(remoteUser.workspaceId))
+        }
+      }
+      if (!canceled) setLoading(false)
+    }
+
+    void boot().catch((error) => {
+      console.error(error)
+      if (!canceled) setLoading(false)
+    })
+
+    return () => {
+      canceled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    let canceled = false
+
+    async function loadData() {
+      if (!user) {
+        setData(null)
+        return
+      }
+
+      if (user.mode === 'supabase') {
+        const remoteData = await loadSupabaseData(user.workspaceId)
+        if (!canceled) setData(remoteData)
+      } else {
+        setData(loadWorkspaceData(user.workspaceId))
+      }
+    }
+
+    void loadData().catch((error) => {
+      console.error(error)
+      setSaveError(error instanceof Error ? error.message : 'Could not load workspace.')
+    })
+
+    return () => {
+      canceled = true
     }
   }, [user])
 
   function commit(nextData: AppData) {
     setData(nextData)
-    saveWorkspaceData(nextData)
+    setSaveError('')
+    if (user?.mode === 'supabase') {
+      void saveSupabaseData(nextData).catch((error) => {
+        console.error(error)
+        setSaveError(error instanceof Error ? error.message : 'Could not save workspace.')
+      })
+    } else {
+      saveLocalWorkspaceData(nextData)
+    }
+  }
+
+  if (loading) {
+    return <main className="loading-shell">Loading workspace...</main>
   }
 
   if (!user || !data) {
@@ -124,8 +190,9 @@ function App() {
             className="icon-button"
             title="Sign out"
             onClick={() => {
-              signOut()
-              setUser(null)
+              void (user.mode === 'supabase' ? signOutSupabase() : Promise.resolve(signOutLocal())).finally(() => {
+                setUser(null)
+              })
             }}
           >
             <LogOut size={18} />
@@ -141,9 +208,11 @@ function App() {
           </div>
           <div className="sync-pill">
             <Shield size={16} />
-            <span>Local password account</span>
+            <span>{user.mode === 'supabase' ? 'Shared Supabase account' : 'Local password account'}</span>
           </div>
         </header>
+
+        {saveError && <div className="save-error">{saveError}</div>}
 
         {activeView === 'grants' && <GrantDashboard data={data} commit={commit} />}
         {activeView === 'answers' && <AnswerBank data={data} commit={commit} />}
@@ -203,8 +272,12 @@ function AuthScreen({ onAuthenticated }: { onAuthenticated: (user: AppUser) => v
     try {
       const nextUser =
         mode === 'create'
-          ? await createAccount(email, password, displayName, workspaceName)
-          : await signIn(email, password)
+          ? isSupabaseConfigured()
+            ? await createSupabaseAccount(email, password, displayName, workspaceName)
+            : await createLocalAccount(email, password, displayName, workspaceName)
+          : isSupabaseConfigured()
+            ? await signInSupabase(email, password)
+            : await signInLocal(email, password)
       onAuthenticated(nextUser)
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Something went wrong.')
@@ -220,7 +293,7 @@ function AuthScreen({ onAuthenticated }: { onAuthenticated: (user: AppUser) => v
           </div>
           <div>
             <h1>Grant Dashboard</h1>
-            <p>Password-protected local workspaces</p>
+            <p>{isSupabaseConfigured() ? 'Password-protected shared workspaces' : 'Password-protected local workspaces'}</p>
           </div>
         </div>
 
