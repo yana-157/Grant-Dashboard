@@ -2,12 +2,18 @@ import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import type { AppData, AppUser } from '../types'
 import { createBlankData } from './localStore'
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string | undefined
+const rawSupabaseUrl = import.meta.env.VITE_SUPABASE_URL as string | undefined
 const supabasePublishableKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY as string | undefined
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined
+const supabaseUrl = normalizeSupabaseUrl(rawSupabaseUrl)
 const supabaseBrowserKey = supabasePublishableKey || supabaseAnonKey
 
 let client: SupabaseClient | null = null
+
+function normalizeSupabaseUrl(url: string | undefined) {
+  if (!url) return undefined
+  return url.trim().replace(/\/rest\/v1\/?$/i, '')
+}
 
 export function isSupabaseConfigured() {
   return Boolean(supabaseUrl && supabaseBrowserKey)
