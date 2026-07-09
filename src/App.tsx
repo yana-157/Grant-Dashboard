@@ -52,6 +52,7 @@ const statuses: GrantStatus[] = [
 ]
 
 const priorities: Priority[] = ['High', 'Medium', 'Low']
+const deadlineStatusOptions: GrantLead['deadlineStatus'][] = ['Open', 'Due soon', 'Rolling', 'Watch', 'Closed']
 
 function App() {
   const [loading, setLoading] = useState(true)
@@ -204,7 +205,7 @@ function App() {
       <section className="workspace">
         <header className="topbar">
           <div>
-            <p className="eyebrow">{data.workspace.serviceArea || 'Local workspace'}</p>
+            <p className="eyebrow">Grant prospecting workspace</p>
             <h1>{viewTitle(activeView)}</h1>
           </div>
           <div className="sync-pill">
@@ -346,8 +347,9 @@ function AuthScreen({ onAuthenticated }: { onAuthenticated: (user: AppUser) => v
 
 function GrantDashboard({ data, commit }: { data: AppData; commit: (data: AppData) => void }) {
   const [query, setQuery] = useState('')
-  const [statusFilter, setStatusFilter] = useState('All')
-  const [priorityFilter, setPriorityFilter] = useState('All')
+  const [statusFilter, setStatusFilter] = useState<GrantStatus | ''>('')
+  const [priorityFilter, setPriorityFilter] = useState<Priority | ''>('')
+  const [deadlineStatusFilter, setDeadlineStatusFilter] = useState<GrantLead['deadlineStatus'] | ''>('')
   const [selectedId, setSelectedId] = useState(data.grants[0]?.id || '')
   const [draftGrant, setDraftGrant] = useState<Partial<GrantLead>>({})
   const selectedGrant = data.grants.find((grant) => grant.id === selectedId) || data.grants[0]
@@ -369,10 +371,11 @@ function GrantDashboard({ data, commit }: { data: AppData; commit: (data: AppDat
           .toLowerCase()
         return !needle || haystack.includes(needle)
       })
-      .filter((grant) => statusFilter === 'All' || grant.status === statusFilter)
-      .filter((grant) => priorityFilter === 'All' || grant.priority === priorityFilter)
+      .filter((grant) => !statusFilter || grant.status === statusFilter)
+      .filter((grant) => !priorityFilter || grant.priority === priorityFilter)
+      .filter((grant) => !deadlineStatusFilter || grant.deadlineStatus === deadlineStatusFilter)
       .sort((a, b) => b.fitScore - a.fitScore || priorityRank(a.priority) - priorityRank(b.priority))
-  }, [data.grants, priorityFilter, query, statusFilter])
+  }, [data.grants, deadlineStatusFilter, priorityFilter, query, statusFilter])
 
   function upsertGrant(event: FormEvent) {
     event.preventDefault()
@@ -394,6 +397,18 @@ function GrantDashboard({ data, commit }: { data: AppData; commit: (data: AppDat
     })
   }
 
+  function toggleStatusFilter(status: GrantStatus) {
+    setStatusFilter((current) => (current === status ? '' : status))
+  }
+
+  function togglePriorityFilter(priority: Priority) {
+    setPriorityFilter((current) => (current === priority ? '' : priority))
+  }
+
+  function toggleDeadlineStatusFilter(statusOption: GrantLead['deadlineStatus']) {
+    setDeadlineStatusFilter((current) => (current === statusOption ? '' : statusOption))
+  }
+
   return (
     <div className="content-grid grants-grid">
       <section className="panel pipeline-panel">
@@ -409,24 +424,44 @@ function GrantDashboard({ data, commit }: { data: AppData; commit: (data: AppDat
             <Search size={17} />
             <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search grants" />
           </label>
-          <label className="select-control">
-            <ListFilter size={17} />
-            <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
-              <option>All</option>
+          <div className="filter-stack">
+            <FilterGroup active={Boolean(statusFilter)} label="Status" onClear={() => setStatusFilter('')}>
               {statuses.map((status) => (
-                <option key={status}>{status}</option>
+                <button
+                  key={status}
+                  className={statusFilter === status ? 'filter-chip active' : 'filter-chip'}
+                  type="button"
+                  onClick={() => toggleStatusFilter(status)}
+                >
+                  {status}
+                </button>
               ))}
-            </select>
-          </label>
-          <label className="select-control">
-            <ListFilter size={17} />
-            <select value={priorityFilter} onChange={(event) => setPriorityFilter(event.target.value)}>
-              <option>All</option>
+            </FilterGroup>
+            <FilterGroup active={Boolean(priorityFilter)} label="Priority" onClear={() => setPriorityFilter('')}>
               {priorities.map((priority) => (
-                <option key={priority}>{priority}</option>
+                <button
+                  key={priority}
+                  className={priorityFilter === priority ? 'filter-chip active' : 'filter-chip'}
+                  type="button"
+                  onClick={() => togglePriorityFilter(priority)}
+                >
+                  {priority}
+                </button>
               ))}
-            </select>
-          </label>
+            </FilterGroup>
+            <FilterGroup active={Boolean(deadlineStatusFilter)} label="Deadline status" onClear={() => setDeadlineStatusFilter('')}>
+              {deadlineStatusOptions.map((statusOption) => (
+                <button
+                  key={statusOption}
+                  className={deadlineStatusFilter === statusOption ? 'filter-chip active' : 'filter-chip'}
+                  type="button"
+                  onClick={() => toggleDeadlineStatusFilter(statusOption)}
+                >
+                  {statusOption}
+                </button>
+              ))}
+            </FilterGroup>
+          </div>
         </div>
 
         <div className="table-wrap">
@@ -454,7 +489,7 @@ function GrantDashboard({ data, commit }: { data: AppData; commit: (data: AppDat
                     <span>{grant.category}</span>
                   </td>
                   <td>
-                    <strong>{grant.deadlineLabel || grant.deadline || 'Watch'}</strong>
+                    <strong>{formatDeadline(grant)}</strong>
                     <span>{grant.deadlineStatus}</span>
                   </td>
                   <td>
@@ -500,6 +535,9 @@ function GrantDashboard({ data, commit }: { data: AppData; commit: (data: AppDat
             </div>
             <div className="detail-stack">
               <Detail label="Amount" value={selectedGrant.amount} />
+              <Detail label="Deadline" value={formatDeadline(selectedGrant)} />
+              <Detail label="Deadline note" value={selectedGrant.deadlineLabel} />
+              <Detail label="Deadline status" value={selectedGrant.deadlineStatus} />
               <Detail label="Geography" value={selectedGrant.geography} />
               <Detail label="Eligibility" value={selectedGrant.eligibility} />
               <Detail label="Why it fits" value={selectedGrant.fitReason} />
@@ -535,13 +573,26 @@ function GrantDashboard({ data, commit }: { data: AppData; commit: (data: AppDat
               onChange={(event) => setDraftGrant({ ...draftGrant, amount: event.target.value })}
             />
             <input
-              placeholder="Deadline"
-              value={draftGrant.deadlineLabel || ''}
-              onChange={(event) => setDraftGrant({ ...draftGrant, deadlineLabel: event.target.value })}
+              aria-label="Deadline date and time"
+              type="datetime-local"
+              value={toDeadlineInputValue(draftGrant.deadline || '')}
+              onChange={(event) => setDraftGrant({ ...draftGrant, deadline: event.target.value, deadlineLabel: '' })}
             />
           </div>
           <div className="form-row">
             <select
+              aria-label="Deadline status"
+              value={draftGrant.deadlineStatus || 'Watch'}
+              onChange={(event) =>
+                setDraftGrant({ ...draftGrant, deadlineStatus: event.target.value as GrantLead['deadlineStatus'] })
+              }
+            >
+              {deadlineStatusOptions.map((statusOption) => (
+                <option key={statusOption}>{statusOption}</option>
+              ))}
+            </select>
+            <select
+              aria-label="Priority"
               value={draftGrant.priority || 'Medium'}
               onChange={(event) => setDraftGrant({ ...draftGrant, priority: event.target.value as Priority })}
             >
@@ -549,6 +600,8 @@ function GrantDashboard({ data, commit }: { data: AppData; commit: (data: AppDat
                 <option key={priority}>{priority}</option>
               ))}
             </select>
+          </div>
+          <div className="form-row">
             <input
               type="number"
               min="0"
@@ -578,6 +631,31 @@ function GrantDashboard({ data, commit }: { data: AppData; commit: (data: AppDat
   )
 }
 
+function FilterGroup({
+  active,
+  children,
+  label,
+  onClear,
+}: {
+  active: boolean
+  children: ReactNode
+  label: string
+  onClear: () => void
+}) {
+  return (
+    <div className="filter-group">
+      <div className="filter-label">
+        <ListFilter size={15} />
+        <span>{label}</span>
+      </div>
+      <div className="filter-chips">{children}</div>
+      <button className="clear-filter" disabled={!active} type="button" onClick={onClear}>
+        Clear
+      </button>
+    </div>
+  )
+}
+
 function Metric({ label, value }: { label: string; value: string }) {
   return (
     <div className="metric">
@@ -599,6 +677,45 @@ function Detail({ label, value }: { label: string; value: string }) {
 
 function PriorityBadge({ priority }: { priority: Priority }) {
   return <span className={`priority ${priority.toLowerCase()}`}>{priority}</span>
+}
+
+function formatDeadline(grant: GrantLead) {
+  const exactDeadline = formatDeadlineValue(grant.deadline)
+  if (exactDeadline) return exactDeadline
+  if (grant.deadlineStatus === 'Rolling') return 'Rolling'
+  if (grant.deadlineStatus === 'Closed') return 'Closed; date not recorded'
+  return 'Deadline not published'
+}
+
+function formatDeadlineValue(value: string) {
+  if (!value) return ''
+  const hasTime = /T\d{2}:\d{2}/.test(value)
+  const date = new Date(hasTime ? value : `${value}T12:00:00`)
+  if (Number.isNaN(date.getTime())) return value
+
+  const datePart = new Intl.DateTimeFormat('en-US', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+  }).format(date)
+
+  if (!hasTime) return `${datePart} (time not listed)`
+
+  const timePart = new Intl.DateTimeFormat('en-US', {
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(date)
+
+  return `${datePart}, ${timePart}`
+}
+
+function toDeadlineInputValue(value: string) {
+  if (!value) return ''
+  const date = new Date(/T\d{2}:\d{2}/.test(value) ? value : `${value}T00:00:00`)
+  if (Number.isNaN(date.getTime())) return ''
+
+  const pad = (part: number) => part.toString().padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`
 }
 
 function priorityRank(priority: Priority) {
