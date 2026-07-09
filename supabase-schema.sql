@@ -71,21 +71,22 @@ drop policy if exists "members can read memberships" on public.workspace_members
 create policy "members can read memberships"
 on public.workspace_members
 for select
-using (
-  user_id = auth.uid()
-  or exists (
-    select 1
-    from public.workspace_members wm
-    where wm.workspace_id = workspace_members.workspace_id
-      and wm.user_id = auth.uid()
-  )
-);
+using (user_id = auth.uid());
 
 drop policy if exists "users can add self as owner" on public.workspace_members;
 create policy "users can add self as owner"
 on public.workspace_members
 for insert
-with check (user_id = auth.uid() and role = 'owner');
+with check (
+  user_id = auth.uid()
+  and role = 'owner'
+  and exists (
+    select 1
+    from public.workspaces w
+    where w.id = workspace_members.workspace_id
+      and w.created_by = auth.uid()
+  )
+);
 
 drop policy if exists "owners can manage memberships" on public.workspace_members;
 create policy "owners can manage memberships"
@@ -94,19 +95,17 @@ for update
 using (
   exists (
     select 1
-    from public.workspace_members wm
-    where wm.workspace_id = workspace_members.workspace_id
-      and wm.user_id = auth.uid()
-      and wm.role in ('owner', 'admin')
+    from public.workspaces w
+    where w.id = workspace_members.workspace_id
+      and w.created_by = auth.uid()
   )
 )
 with check (
   exists (
     select 1
-    from public.workspace_members wm
-    where wm.workspace_id = workspace_members.workspace_id
-      and wm.user_id = auth.uid()
-      and wm.role in ('owner', 'admin')
+    from public.workspaces w
+    where w.id = workspace_members.workspace_id
+      and w.created_by = auth.uid()
   )
 );
 
