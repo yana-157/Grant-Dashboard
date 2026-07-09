@@ -25,6 +25,11 @@ alter table public.workspaces enable row level security;
 alter table public.workspace_members enable row level security;
 alter table public.workspace_data enable row level security;
 
+grant usage on schema public to authenticated;
+grant select, insert, update, delete on table public.workspaces to authenticated;
+grant select, insert, update, delete on table public.workspace_members to authenticated;
+grant select, insert, update, delete on table public.workspace_data to authenticated;
+
 drop policy if exists "members can read workspaces" on public.workspaces;
 create policy "members can read workspaces"
 on public.workspaces
