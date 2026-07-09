@@ -38,6 +38,6 @@ Use the Settings view to import or export workspace JSON.
 ## Shared Login Setup
 
 1. Run `supabase-schema.sql` in the Supabase SQL editor.
-2. Set `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` for the GitHub Pages build.
+2. Set `VITE_SUPABASE_URL` and either `VITE_SUPABASE_PUBLISHABLE_KEY` or `VITE_SUPABASE_ANON_KEY` for the GitHub Pages build.
 3. Redeploy.
 4. Create the shared workspace account in the app.

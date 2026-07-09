@@ -3,12 +3,14 @@ import type { AppData, AppUser } from '../types'
 import { createBlankData } from './localStore'
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string | undefined
+const supabasePublishableKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY as string | undefined
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined
+const supabaseBrowserKey = supabasePublishableKey || supabaseAnonKey
 
 let client: SupabaseClient | null = null
 
 export function isSupabaseConfigured() {
-  return Boolean(supabaseUrl && supabaseAnonKey)
+  return Boolean(supabaseUrl && supabaseBrowserKey)
 }
 
 function getClient() {
@@ -17,7 +19,7 @@ function getClient() {
   }
 
   if (!client) {
-    client = createClient(supabaseUrl!, supabaseAnonKey!, {
+    client = createClient(supabaseUrl!, supabaseBrowserKey!, {
       auth: {
         persistSession: true,
         autoRefreshToken: true,
