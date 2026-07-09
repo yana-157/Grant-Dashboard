@@ -96,13 +96,37 @@ export async function createSupabaseAccount(
     },
   })
 
-  if (error) throw error
+  if (error) {
+    if (isExistingUserError(error)) {
+      return signInAndEnsureWorkspace(normalizedEmail, password, workspaceName)
+    }
+    throw error
+  }
   if (!data.user?.email) throw new Error('Account was not created.')
   if (!data.session) {
     throw new Error('Account created, but email confirmation is required before workspace setup.')
   }
 
-  const workspaceId = await createWorkspaceForUser(data.user.id, workspaceName.trim() || 'Grant Workspace')
+  const workspaceId = await ensureWorkspaceForUser(data.user.id, workspaceName.trim() || 'Grant Workspace')
+  return toAppUser(data.user.id, data.user.email, workspaceId)
+}
+
+function isExistingUserError(error: { code?: string; message?: string }) {
+  const message = error.message?.toLowerCase() || ''
+  return error.code === 'user_already_exists' || message.includes('already registered')
+}
+
+async function signInAndEnsureWorkspace(email: string, password: string, workspaceName: string) {
+  const supabase = getClient()
+  const { data, error } = await supabase.auth.signInWithPassword({
+    email,
+    password,
+  })
+
+  if (error) throw error
+  if (!data.user?.email) throw new Error('Sign-in did not return a user.')
+
+  const workspaceId = await ensureWorkspaceForUser(data.user.id, workspaceName.trim() || 'Grant Workspace')
   return toAppUser(data.user.id, data.user.email, workspaceId)
 }
 
@@ -161,6 +185,11 @@ async function createWorkspaceForUser(userId: string, workspaceName: string) {
   if (dataError) throw dataError
 
   return workspace.id as string
+}
+
+async function ensureWorkspaceForUser(userId: string, workspaceName: string) {
+  const existingWorkspaceId = await getFirstWorkspaceId(userId)
+  return existingWorkspaceId || createWorkspaceForUser(userId, workspaceName)
 }
 
 export async function loadSupabaseData(workspaceId: string): Promise<AppData> {
