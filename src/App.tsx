@@ -55,8 +55,9 @@ const priorities: Priority[] = ['High', 'Medium', 'Low']
 
 function App() {
   const [loading, setLoading] = useState(true)
-  const [user, setUser] = useState<AppUser | null>(() => getCurrentUser())
+  const [user, setUser] = useState<AppUser | null>(() => (isSupabaseConfigured() ? null : getCurrentUser()))
   const [data, setData] = useState<AppData | null>(() => {
+    if (isSupabaseConfigured()) return null
     const currentUser = getCurrentUser()
     return currentUser ? loadWorkspaceData(currentUser.workspaceId) : null
   })
