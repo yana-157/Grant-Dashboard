@@ -2,16 +2,20 @@ export type BackendMode = 'local' | 'supabase'
 
 export type GrantStatus =
   | 'Prospect'
-  | 'Researching'
-  | 'Ready'
-  | 'In progress'
+  | 'Working'
   | 'Submitted'
   | 'Awarded'
   | 'Not a fit'
   | 'Watchlist'
-  | 'Closed'
+
+export type DeadlineStatus = 'Open' | 'Due soon' | 'Rolling' | 'Closed'
 
 export type Priority = 'High' | 'Medium' | 'Low'
+
+export interface WorkspaceFolder {
+  id: string
+  label: string
+}
 
 export interface Workspace {
   id: string
@@ -29,8 +33,9 @@ export interface GrantLead {
   amount: string
   deadline: string
   deadlineLabel: string
-  deadlineStatus: 'Open' | 'Due soon' | 'Rolling' | 'Closed' | 'Watch'
+  deadlineStatus: DeadlineStatus
   geography: string
+  folderId: string
   priority: Priority
   fitScore: number
   status: GrantStatus
@@ -78,6 +83,7 @@ export interface TaskItem {
 
 export interface AppData {
   workspace: Workspace
+  folders: WorkspaceFolder[]
   grants: GrantLead[]
   answers: AnswerRecord[]
   documents: DocumentItem[]

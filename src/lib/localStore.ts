@@ -1,4 +1,4 @@
-import type { AppData, AppUser, GrantLead, Workspace } from '../types'
+import type { AppData, AppUser, DeadlineStatus, GrantLead, GrantStatus, Workspace, WorkspaceFolder } from '../types'
 
 const accountKey = 'grant-dashboard:accounts:v1'
 const sessionKey = 'grant-dashboard:session:v1'
@@ -24,6 +24,7 @@ export function createBlankData(workspaceName: string): AppData {
 
   return {
     workspace,
+    folders: [],
     grants: [],
     answers: [],
     documents: [],
@@ -135,14 +136,14 @@ export function signOut() {
 export function loadWorkspaceData(workspaceId: string): AppData | null {
   try {
     const raw = localStorage.getItem(`${dataPrefix}${workspaceId}`)
-    return raw ? (JSON.parse(raw) as AppData) : null
+    return raw ? normalizeAppData(JSON.parse(raw) as Partial<AppData>) : null
   } catch {
     return null
   }
 }
 
 export function saveWorkspaceData(data: AppData) {
-  localStorage.setItem(`${dataPrefix}${data.workspace.id}`, JSON.stringify(data))
+  localStorage.setItem(`${dataPrefix}${data.workspace.id}`, JSON.stringify(normalizeAppData(data)))
 }
 
 export function normalizeGrant(partial: Partial<GrantLead>): GrantLead {
@@ -155,11 +156,12 @@ export function normalizeGrant(partial: Partial<GrantLead>): GrantLead {
     amount: partial.amount || '',
     deadline: partial.deadline || '',
     deadlineLabel: partial.deadlineLabel || partial.deadline || '',
-    deadlineStatus: partial.deadlineStatus || 'Watch',
+    deadlineStatus: normalizeDeadlineStatus(partial.deadlineStatus),
     geography: partial.geography || '',
+    folderId: partial.folderId || '',
     priority: partial.priority || 'Medium',
     fitScore: Number(partial.fitScore ?? 50),
-    status: partial.status || 'Prospect',
+    status: normalizeGrantStatus(partial.status),
     sourceUrl: partial.sourceUrl || '',
     sourceLabel: partial.sourceLabel || '',
     eligibility: partial.eligibility || '',
@@ -169,4 +171,53 @@ export function normalizeGrant(partial: Partial<GrantLead>): GrantLead {
     tags: Array.isArray(partial.tags) ? partial.tags : [],
     updatedAt: partial.updatedAt || now,
   }
+}
+
+export function normalizeAppData(partial: Partial<AppData>): AppData {
+  const workspace: Workspace = {
+    id: partial.workspace?.id || crypto.randomUUID(),
+    name: partial.workspace?.name || 'Grant Workspace',
+    mission: partial.workspace?.mission || '',
+    serviceArea: partial.workspace?.serviceArea || '',
+    profileNotes: partial.workspace?.profileNotes || '',
+  }
+  const folders = Array.isArray(partial.folders)
+    ? partial.folders.map(normalizeFolder).filter((folder): folder is WorkspaceFolder => Boolean(folder))
+    : []
+  const folderIds = new Set(folders.map((folder) => folder.id))
+
+  return {
+    workspace,
+    folders,
+    grants: Array.isArray(partial.grants)
+      ? partial.grants.map((grant) => {
+          const normalized = normalizeGrant(grant)
+          return folderIds.has(normalized.folderId) ? normalized : { ...normalized, folderId: '' }
+        })
+      : [],
+    answers: Array.isArray(partial.answers) ? partial.answers : [],
+    documents: Array.isArray(partial.documents) ? partial.documents : [],
+    tasks: Array.isArray(partial.tasks) ? partial.tasks : [],
+  }
+}
+
+export function normalizeFolder(partial: Partial<WorkspaceFolder>): WorkspaceFolder | null {
+  const label = partial.label?.trim()
+  if (!label) return null
+  return {
+    id: partial.id || crypto.randomUUID(),
+    label,
+  }
+}
+
+function normalizeGrantStatus(status: GrantStatus | string | undefined): GrantStatus {
+  if (status === 'Submitted' || status === 'Awarded' || status === 'Not a fit' || status === 'Watchlist') return status
+  if (status === 'Researching' || status === 'Ready' || status === 'In progress' || status === 'Working') return 'Working'
+  if (status === 'Closed') return 'Watchlist'
+  return 'Prospect'
+}
+
+function normalizeDeadlineStatus(status: DeadlineStatus | string | undefined): DeadlineStatus {
+  if (status === 'Due soon' || status === 'Rolling' || status === 'Closed') return status
+  return 'Open'
 }

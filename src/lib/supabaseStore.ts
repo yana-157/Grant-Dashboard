@@ -1,6 +1,6 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import type { AppData, AppUser } from '../types'
-import { createBlankData } from './localStore'
+import { createBlankData, normalizeAppData } from './localStore'
 
 const rawSupabaseUrl = import.meta.env.VITE_SUPABASE_URL as string | undefined
 const supabasePublishableKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY as string | undefined
@@ -202,16 +202,17 @@ export async function loadSupabaseData(workspaceId: string): Promise<AppData> {
   const { data, error } = await supabase.from('workspace_data').select('data').eq('workspace_id', workspaceId).single()
 
   if (error) throw error
-  return data.data as AppData
+  return normalizeAppData(data.data as Partial<AppData>)
 }
 
 export async function saveSupabaseData(appData: AppData) {
   const supabase = getClient()
+  const data = normalizeAppData(appData)
   const { error } = await supabase
     .from('workspace_data')
     .upsert({
-      workspace_id: appData.workspace.id,
-      data: appData,
+      workspace_id: data.workspace.id,
+      data,
       updated_at: new Date().toISOString(),
     })
 

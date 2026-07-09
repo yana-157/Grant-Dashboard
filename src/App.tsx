@@ -24,6 +24,7 @@ import {
   createAccount as createLocalAccount,
   getCurrentUser,
   loadWorkspaceData,
+  normalizeFolder,
   normalizeGrant,
   saveWorkspaceData as saveLocalWorkspaceData,
   signIn as signInLocal,
@@ -39,20 +40,11 @@ import {
   signOutSupabase,
 } from './lib/supabaseStore'
 
-const statuses: GrantStatus[] = [
-  'Prospect',
-  'Researching',
-  'Ready',
-  'In progress',
-  'Submitted',
-  'Awarded',
-  'Not a fit',
-  'Watchlist',
-  'Closed',
-]
+const statuses: GrantStatus[] = ['Prospect', 'Working', 'Submitted', 'Awarded', 'Not a fit', 'Watchlist']
 
 const priorities: Priority[] = ['High', 'Medium', 'Low']
-const deadlineStatusOptions: GrantLead['deadlineStatus'][] = ['Open', 'Due soon', 'Rolling', 'Watch', 'Closed']
+const deadlineStatusOptions: GrantLead['deadlineStatus'][] = ['Open', 'Due soon', 'Rolling', 'Closed']
+const unfiledFolderFilter = '__unfiled'
 
 function App() {
   const [loading, setLoading] = useState(true)
@@ -349,18 +341,24 @@ function GrantDashboard({ data, commit }: { data: AppData; commit: (data: AppDat
   const [statusFilter, setStatusFilter] = useState<GrantStatus | ''>('')
   const [priorityFilter, setPriorityFilter] = useState<Priority | ''>('')
   const [deadlineStatusFilter, setDeadlineStatusFilter] = useState<GrantLead['deadlineStatus'] | ''>('')
+  const [folderFilter, setFolderFilter] = useState('')
+  const [newFolderLabel, setNewFolderLabel] = useState('')
   const [selectedId, setSelectedId] = useState(data.grants[0]?.id || '')
   const [draftGrant, setDraftGrant] = useState<Partial<GrantLead>>({})
   const selectedGrant = data.grants.find((grant) => grant.id === selectedId) || data.grants[0]
+  const folders = data.folders
+  const folderById = useMemo(() => new Map(folders.map((folder) => [folder.id, folder.label])), [folders])
 
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase()
     return data.grants
       .filter((grant) => {
+        const folderLabel = folderById.get(grant.folderId) || ''
         const haystack = [
           grant.funder,
           grant.grantName,
           grant.category,
+          folderLabel,
           grant.geography,
           grant.fitReason,
           grant.eligibility,
@@ -370,11 +368,12 @@ function GrantDashboard({ data, commit }: { data: AppData; commit: (data: AppDat
           .toLowerCase()
         return !needle || haystack.includes(needle)
       })
+      .filter((grant) => !folderFilter || (folderFilter === unfiledFolderFilter ? !grant.folderId : grant.folderId === folderFilter))
       .filter((grant) => !statusFilter || grant.status === statusFilter)
       .filter((grant) => !priorityFilter || grant.priority === priorityFilter)
       .filter((grant) => !deadlineStatusFilter || grant.deadlineStatus === deadlineStatusFilter)
       .sort((a, b) => b.fitScore - a.fitScore || priorityRank(a.priority) - priorityRank(b.priority))
-  }, [data.grants, deadlineStatusFilter, priorityFilter, query, statusFilter])
+  }, [data.grants, deadlineStatusFilter, folderById, folderFilter, priorityFilter, query, statusFilter])
 
   function upsertGrant(event: FormEvent) {
     event.preventDefault()
@@ -396,16 +395,20 @@ function GrantDashboard({ data, commit }: { data: AppData; commit: (data: AppDat
     })
   }
 
-  function toggleStatusFilter(status: GrantStatus) {
-    setStatusFilter((current) => (current === status ? '' : status))
-  }
+  function createFolder(event: FormEvent) {
+    event.preventDefault()
+    const folder = normalizeFolder({ label: newFolderLabel })
+    if (!folder) return
+    const existing = folders.find((item) => item.label.toLowerCase() === folder.label.toLowerCase())
+    if (existing) {
+      setFolderFilter(existing.id)
+      setNewFolderLabel('')
+      return
+    }
 
-  function togglePriorityFilter(priority: Priority) {
-    setPriorityFilter((current) => (current === priority ? '' : priority))
-  }
-
-  function toggleDeadlineStatusFilter(statusOption: GrantLead['deadlineStatus']) {
-    setDeadlineStatusFilter((current) => (current === statusOption ? '' : statusOption))
+    commit({ ...data, folders: [...folders, folder] })
+    setFolderFilter(folder.id)
+    setNewFolderLabel('')
   }
 
   return (
@@ -414,7 +417,7 @@ function GrantDashboard({ data, commit }: { data: AppData; commit: (data: AppDat
         <div className="stats-row">
           <Metric label="Total" value={data.grants.length.toString()} />
           <Metric label="High priority" value={data.grants.filter((grant) => grant.priority === 'High').length.toString()} />
-          <Metric label="Ready" value={data.grants.filter((grant) => grant.status === 'Ready').length.toString()} />
+          <Metric label="Working" value={data.grants.filter((grant) => grant.status === 'Working').length.toString()} />
           <Metric label="Due soon" value={data.grants.filter((grant) => grant.deadlineStatus === 'Due soon').length.toString()} />
         </div>
 
@@ -423,43 +426,62 @@ function GrantDashboard({ data, commit }: { data: AppData; commit: (data: AppDat
             <Search size={17} />
             <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search grants" />
           </label>
-          <div className="filter-stack">
-            <FilterGroup active={Boolean(statusFilter)} label="Status" onClear={() => setStatusFilter('')}>
-              {statuses.map((status) => (
-                <button
-                  key={status}
-                  className={statusFilter === status ? 'filter-chip active' : 'filter-chip'}
-                  type="button"
-                  onClick={() => toggleStatusFilter(status)}
-                >
-                  {status}
-                </button>
-              ))}
-            </FilterGroup>
-            <FilterGroup active={Boolean(priorityFilter)} label="Priority" onClear={() => setPriorityFilter('')}>
-              {priorities.map((priority) => (
-                <button
-                  key={priority}
-                  className={priorityFilter === priority ? 'filter-chip active' : 'filter-chip'}
-                  type="button"
-                  onClick={() => togglePriorityFilter(priority)}
-                >
-                  {priority}
-                </button>
-              ))}
-            </FilterGroup>
-            <FilterGroup active={Boolean(deadlineStatusFilter)} label="Deadline status" onClear={() => setDeadlineStatusFilter('')}>
-              {deadlineStatusOptions.map((statusOption) => (
-                <button
-                  key={statusOption}
-                  className={deadlineStatusFilter === statusOption ? 'filter-chip active' : 'filter-chip'}
-                  type="button"
-                  onClick={() => toggleDeadlineStatusFilter(statusOption)}
-                >
-                  {statusOption}
-                </button>
-              ))}
-            </FilterGroup>
+          <div className="filter-row">
+            <label className="select-control">
+              <ListFilter size={17} />
+              <span className="filter-select-label">Progress</span>
+              <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as GrantStatus | '')}>
+                <option value="">All progress</option>
+                {statuses.map((status) => (
+                  <option key={status}>{status}</option>
+                ))}
+              </select>
+            </label>
+            <label className="select-control">
+              <ListFilter size={17} />
+              <span className="filter-select-label">Priority</span>
+              <select value={priorityFilter} onChange={(event) => setPriorityFilter(event.target.value as Priority | '')}>
+                <option value="">All priorities</option>
+                {priorities.map((priority) => (
+                  <option key={priority}>{priority}</option>
+                ))}
+              </select>
+            </label>
+            <label className="select-control">
+              <ListFilter size={17} />
+              <span className="filter-select-label">Deadline</span>
+              <select
+                value={deadlineStatusFilter}
+                onChange={(event) => setDeadlineStatusFilter(event.target.value as GrantLead['deadlineStatus'] | '')}
+              >
+                <option value="">All deadlines</option>
+                {deadlineStatusOptions.map((statusOption) => (
+                  <option key={statusOption}>{statusOption}</option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <div className="folder-row">
+            <label className="select-control folder-filter-control">
+              <ListFilter size={17} />
+              <span className="filter-select-label">Folder</span>
+              <select value={folderFilter} onChange={(event) => setFolderFilter(event.target.value)}>
+                <option value="">All folders</option>
+                <option value={unfiledFolderFilter}>Unfiled</option>
+                {folders.map((folder) => (
+                  <option key={folder.id} value={folder.id}>
+                    {folder.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <form className="folder-create" onSubmit={createFolder}>
+              <input value={newFolderLabel} onChange={(event) => setNewFolderLabel(event.target.value)} placeholder="New folder label" />
+              <button className="secondary-button" type="submit">
+                <Plus size={16} />
+                Create folder
+              </button>
+            </form>
           </div>
         </div>
 
@@ -472,7 +494,7 @@ function GrantDashboard({ data, commit }: { data: AppData; commit: (data: AppDat
                 <th>Deadline</th>
                 <th>Priority</th>
                 <th>Fit</th>
-                <th>Status</th>
+                <th>Progress</th>
               </tr>
             </thead>
             <tbody>
@@ -485,7 +507,7 @@ function GrantDashboard({ data, commit }: { data: AppData; commit: (data: AppDat
                   <td>{grant.funder}</td>
                   <td>
                     <strong>{grant.grantName}</strong>
-                    <span>{grant.category}</span>
+                    <span>{[folderById.get(grant.folderId), grant.category].filter(Boolean).join(' / ')}</span>
                   </td>
                   <td>
                     <strong>{formatDeadline(grant)}</strong>
@@ -534,6 +556,7 @@ function GrantDashboard({ data, commit }: { data: AppData; commit: (data: AppDat
             </div>
             <div className="detail-stack">
               <Detail label="Amount" value={selectedGrant.amount} />
+              <Detail label="Folder" value={folderById.get(selectedGrant.folderId) || 'Unfiled'} />
               <Detail label="Deadline" value={formatDeadline(selectedGrant)} />
               <Detail label="Deadline note" value={selectedGrant.deadlineLabel} />
               <Detail label="Deadline status" value={selectedGrant.deadlineStatus} />
@@ -581,7 +604,7 @@ function GrantDashboard({ data, commit }: { data: AppData; commit: (data: AppDat
           <div className="form-row">
             <select
               aria-label="Deadline status"
-              value={draftGrant.deadlineStatus || 'Watch'}
+              value={draftGrant.deadlineStatus || 'Open'}
               onChange={(event) =>
                 setDraftGrant({ ...draftGrant, deadlineStatus: event.target.value as GrantLead['deadlineStatus'] })
               }
@@ -597,6 +620,29 @@ function GrantDashboard({ data, commit }: { data: AppData; commit: (data: AppDat
             >
               {priorities.map((priority) => (
                 <option key={priority}>{priority}</option>
+              ))}
+            </select>
+          </div>
+          <div className="form-row">
+            <select
+              aria-label="Folder"
+              value={draftGrant.folderId || ''}
+              onChange={(event) => setDraftGrant({ ...draftGrant, folderId: event.target.value })}
+            >
+              <option value="">No folder</option>
+              {folders.map((folder) => (
+                <option key={folder.id} value={folder.id}>
+                  {folder.label}
+                </option>
+              ))}
+            </select>
+            <select
+              aria-label="Progress"
+              value={draftGrant.status || 'Prospect'}
+              onChange={(event) => setDraftGrant({ ...draftGrant, status: event.target.value as GrantStatus })}
+            >
+              {statuses.map((status) => (
+                <option key={status}>{status}</option>
               ))}
             </select>
           </div>
@@ -626,31 +672,6 @@ function GrantDashboard({ data, commit }: { data: AppData; commit: (data: AppDat
           </button>
         </form>
       </aside>
-    </div>
-  )
-}
-
-function FilterGroup({
-  active,
-  children,
-  label,
-  onClear,
-}: {
-  active: boolean
-  children: ReactNode
-  label: string
-  onClear: () => void
-}) {
-  return (
-    <div className="filter-group">
-      <div className="filter-label">
-        <ListFilter size={15} />
-        <span>{label}</span>
-      </div>
-      <div className="filter-chips">{children}</div>
-      <button className="clear-filter" disabled={!active} type="button" onClick={onClear}>
-        Clear
-      </button>
     </div>
   )
 }
@@ -994,9 +1015,38 @@ function TasksView({ data, commit }: { data: AppData; commit: (data: AppData) =>
 function SettingsView({ data, commit }: { data: AppData; commit: (data: AppData) => void }) {
   const [importText, setImportText] = useState('')
   const [message, setMessage] = useState('')
+  const [folderLabel, setFolderLabel] = useState('')
 
   function updateWorkspace(patch: Partial<AppData['workspace']>) {
     commit({ ...data, workspace: { ...data.workspace, ...patch } })
+  }
+
+  function addFolder(event: FormEvent) {
+    event.preventDefault()
+    const folder = normalizeFolder({ label: folderLabel })
+    if (!folder) return
+    const exists = data.folders.some((item) => item.label.toLowerCase() === folder.label.toLowerCase())
+    if (exists) {
+      setFolderLabel('')
+      return
+    }
+
+    commit({ ...data, folders: [...data.folders, folder] })
+    setFolderLabel('')
+  }
+
+  function renameFolder(id: string, label: string) {
+    const folder = normalizeFolder({ id, label })
+    if (!folder) return
+    commit({ ...data, folders: data.folders.map((item) => (item.id === id ? folder : item)) })
+  }
+
+  function removeFolder(id: string) {
+    commit({
+      ...data,
+      folders: data.folders.filter((folder) => folder.id !== id),
+      grants: data.grants.map((grant) => (grant.folderId === id ? { ...grant, folderId: '' } : grant)),
+    })
   }
 
   function exportWorkspace() {
@@ -1058,6 +1108,28 @@ function SettingsView({ data, commit }: { data: AppData; commit: (data: AppData)
             <textarea value={data.workspace.profileNotes} onChange={(event) => updateWorkspace({ profileNotes: event.target.value })} />
           </label>
         </div>
+      </section>
+
+      <section className="panel">
+        <h2>Folders</h2>
+        <div className="folder-list">
+          {data.folders.map((folder) => (
+            <div className="folder-item" key={folder.id}>
+              <input value={folder.label} onChange={(event) => renameFolder(folder.id, event.target.value)} />
+              <button className="secondary-button" type="button" onClick={() => removeFolder(folder.id)}>
+                Remove
+              </button>
+            </div>
+          ))}
+          {!data.folders.length && <p className="empty-state">No folders yet.</p>}
+        </div>
+        <form className="folder-create settings-folder-create" onSubmit={addFolder}>
+          <input value={folderLabel} onChange={(event) => setFolderLabel(event.target.value)} placeholder="New folder label" />
+          <button className="primary-button" type="submit">
+            <Plus size={17} />
+            Add folder
+          </button>
+        </form>
       </section>
 
       <section className="panel">
