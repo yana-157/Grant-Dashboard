@@ -104,6 +104,11 @@ export async function createSupabaseAccount(
   }
   if (!data.user?.email) throw new Error('Account was not created.')
   if (!data.session) {
+    try {
+      return await signInAndEnsureWorkspace(normalizedEmail, password, workspaceName)
+    } catch {
+      // New users must confirm email before Supabase will issue a browser session.
+    }
     throw new Error('Account created, but email confirmation is required before workspace setup.')
   }
 
