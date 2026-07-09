@@ -30,6 +30,8 @@ create policy "members can read workspaces"
 on public.workspaces
 for select
 using (
+  created_by = auth.uid()
+  or
   exists (
     select 1
     from public.workspace_members wm
@@ -49,6 +51,8 @@ create policy "owners can update workspaces"
 on public.workspaces
 for update
 using (
+  created_by = auth.uid()
+  or
   exists (
     select 1
     from public.workspace_members wm
@@ -58,6 +62,8 @@ using (
   )
 )
 with check (
+  created_by = auth.uid()
+  or
   exists (
     select 1
     from public.workspace_members wm
