@@ -205,7 +205,6 @@ function App() {
       <section className="workspace">
         <header className="topbar">
           <div>
-            <p className="eyebrow">Grant prospecting workspace</p>
             <h1>{viewTitle(activeView)}</h1>
           </div>
           <div className="sync-pill">
