@@ -2,7 +2,6 @@ import {
   Archive,
   CalendarClock,
   Check,
-  Clipboard,
   Database,
   Download,
   FileText,
@@ -16,14 +15,17 @@ import {
   SquarePen,
   Upload,
 } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 import type { FormEvent, ReactNode } from 'react'
-import type { AnswerRecord, AppData, AppUser, DocumentItem, GrantLead, GrantStatus, Priority, TaskItem } from './types'
+import type { AppData, AppUser, DocumentItem, GrantLead, GrantStatus, Priority, TaskItem } from './types'
+import { AnswerBank } from './components/AnswerBank'
+import { ApplicationWorkspace } from './components/ApplicationWorkspace'
 import {
   createAccount as createLocalAccount,
   getCurrentUser,
   loadWorkspaceData,
+  normalizeAppData,
   normalizeFolder,
   normalizeGrant,
   saveWorkspaceData as saveLocalWorkspaceData,
@@ -32,9 +34,11 @@ import {
 } from './lib/localStore'
 import {
   createSupabaseAccount,
+  createWorkspaceInvite,
   getSupabaseCurrentUser,
   isSupabaseConfigured,
   loadSupabaseData,
+  loadWorkspaceMembers,
   saveSupabaseData,
   signInSupabase,
   signOutSupabase,
@@ -44,7 +48,9 @@ const statuses: GrantStatus[] = ['Prospect', 'Working', 'Submitted', 'Awarded', 
 
 const priorities: Priority[] = ['High', 'Medium', 'Low']
 const deadlineStatusOptions: GrantLead['deadlineStatus'][] = ['Open', 'Due soon', 'Rolling', 'Closed']
+const deadlineModeOptions: GrantLead['deadlineStatus'][] = ['Open', 'Rolling', 'Closed']
 const unfiledFolderFilter = '__unfiled'
+type ActiveView = 'grants' | 'application' | 'answers' | 'documents' | 'tasks' | 'settings'
 
 function App() {
   const [loading, setLoading] = useState(true)
@@ -54,21 +60,31 @@ function App() {
     const currentUser = getCurrentUser()
     return currentUser ? loadWorkspaceData(currentUser.workspaceId) : null
   })
-  const [activeView, setActiveView] = useState<'grants' | 'answers' | 'documents' | 'tasks' | 'settings'>('grants')
+  const [activeView, setActiveView] = useState<ActiveView>('grants')
+  const [applicationGrantId, setApplicationGrantId] = useState('')
+  const [applicationId, setApplicationId] = useState('')
   const [saveError, setSaveError] = useState('')
+  const [saveState, setSaveState] = useState<'saved' | 'saving'>('saved')
+  const latestDataRef = useRef<AppData | null>(data)
+  const persistedDataRef = useRef<AppData | null>(data)
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const saveQueueRef = useRef<Promise<void>>(Promise.resolve())
+  const inviteToken = new URLSearchParams(window.location.search).get('invite') || ''
 
   useEffect(() => {
     let canceled = false
 
     async function boot() {
       if (isSupabaseConfigured()) {
-        const remoteUser = await getSupabaseCurrentUser()
+        const remoteUser = await getSupabaseCurrentUser(inviteToken || undefined)
         if (!canceled && remoteUser) {
           setUser(remoteUser)
-          setData(await loadSupabaseData(remoteUser.workspaceId))
+          if (inviteToken) window.history.replaceState({}, '', window.location.pathname)
         }
+        if (!canceled && !remoteUser) setLoading(false)
+      } else if (!canceled) {
+        setLoading(false)
       }
-      if (!canceled) setLoading(false)
     }
 
     void boot().catch((error) => {
@@ -79,7 +95,7 @@ function App() {
     return () => {
       canceled = true
     }
-  }, [])
+  }, [inviteToken])
 
   useEffect(() => {
     let canceled = false
@@ -87,15 +103,18 @@ function App() {
     async function loadData() {
       if (!user) {
         setData(null)
+        setLoading(false)
         return
       }
 
       if (user.mode === 'supabase') {
         const remoteData = await loadSupabaseData(user.workspaceId)
-        if (!canceled) setData(remoteData)
+        if (!canceled) installLoadedData(remoteData)
       } else {
-        setData(loadWorkspaceData(user.workspaceId))
+        const localData = loadWorkspaceData(user.workspaceId)
+        if (localData) installLoadedData(localData)
       }
+      if (!canceled) setLoading(false)
     }
 
     void loadData().catch((error) => {
@@ -108,17 +127,62 @@ function App() {
     }
   }, [user])
 
-  function commit(nextData: AppData) {
+  function installLoadedData(nextData: AppData) {
+    latestDataRef.current = nextData
+    persistedDataRef.current = nextData
     setData(nextData)
-    setSaveError('')
-    if (user?.mode === 'supabase') {
-      void saveSupabaseData(nextData).catch((error) => {
+    setSaveState('saved')
+  }
+
+  function enqueueRemoteSave() {
+    const target = latestDataRef.current
+    if (!target) return saveQueueRef.current
+
+    saveQueueRef.current = saveQueueRef.current
+      .catch(() => undefined)
+      .then(async () => {
+        const baseline = persistedDataRef.current
+        if (!baseline || baseline === target) return
+        await saveSupabaseData(baseline, target)
+        persistedDataRef.current = target
+        if (latestDataRef.current === target) setSaveState('saved')
+      })
+      .catch((error) => {
         console.error(error)
         setSaveError(error instanceof Error ? error.message : 'Could not save workspace.')
       })
+    return saveQueueRef.current
+  }
+
+  function commit(nextData: AppData) {
+    latestDataRef.current = nextData
+    setData(nextData)
+    setSaveError('')
+    if (user?.mode === 'supabase') {
+      setSaveState('saving')
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
+      saveTimerRef.current = setTimeout(() => void enqueueRemoteSave(), 350)
     } else {
       saveLocalWorkspaceData(nextData)
+      persistedDataRef.current = nextData
     }
+  }
+
+  function openApplication(grantId: string, requestedApplicationId = '') {
+    setApplicationGrantId(grantId)
+    setApplicationId(requestedApplicationId)
+    setActiveView('application')
+  }
+
+  async function signOut() {
+    if (user?.mode === 'supabase') {
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
+      await enqueueRemoteSave()
+      await signOutSupabase()
+    } else {
+      signOutLocal()
+    }
+    setUser(null)
   }
 
   if (loading) {
@@ -126,7 +190,7 @@ function App() {
   }
 
   if (!user || !data) {
-    return <AuthScreen onAuthenticated={setUser} />
+    return <AuthScreen inviteToken={inviteToken} onAuthenticated={setUser} />
   }
 
   return (
@@ -144,7 +208,7 @@ function App() {
 
         <nav className="nav-list" aria-label="Workspace sections">
           <NavButton
-            active={activeView === 'grants'}
+            active={activeView === 'grants' || activeView === 'application'}
             icon={<Database size={18} />}
             label="Grants"
             onClick={() => setActiveView('grants')}
@@ -183,11 +247,7 @@ function App() {
           <button
             className="icon-button"
             title="Sign out"
-            onClick={() => {
-              void (user.mode === 'supabase' ? signOutSupabase() : Promise.resolve(signOutLocal())).finally(() => {
-                setUser(null)
-              })
-            }}
+            onClick={() => void signOut()}
           >
             <LogOut size={18} />
           </button>
@@ -201,17 +261,32 @@ function App() {
           </div>
           <div className="sync-pill">
             <Shield size={16} />
-            <span>{user.mode === 'supabase' ? 'Shared Supabase account' : 'Local password account'}</span>
+            <span>
+              {user.mode === 'supabase'
+                ? saveState === 'saving'
+                  ? 'Saving changes...'
+                  : 'Saved to shared workspace'
+                : 'Saved in this browser'}
+            </span>
           </div>
         </header>
 
         {saveError && <div className="save-error">{saveError}</div>}
 
-        {activeView === 'grants' && <GrantDashboard data={data} commit={commit} />}
-        {activeView === 'answers' && <AnswerBank data={data} commit={commit} />}
+        {activeView === 'grants' && <GrantDashboard data={data} commit={commit} onOpenApplication={openApplication} />}
+        {activeView === 'application' && (
+          <ApplicationWorkspace
+            data={data}
+            commit={commit}
+            grantId={applicationGrantId}
+            initialApplicationId={applicationId}
+            onBack={() => setActiveView('grants')}
+          />
+        )}
+        {activeView === 'answers' && <AnswerBank data={data} onOpenApplication={openApplication} />}
         {activeView === 'documents' && <DocumentsView data={data} commit={commit} />}
         {activeView === 'tasks' && <TasksView data={data} commit={commit} />}
-        {activeView === 'settings' && <SettingsView data={data} commit={commit} />}
+        {activeView === 'settings' && <SettingsView data={data} user={user} commit={commit} />}
       </section>
     </main>
   )
@@ -219,6 +294,8 @@ function App() {
 
 function viewTitle(view: string) {
   switch (view) {
+    case 'application':
+      return 'Application Workspace'
     case 'answers':
       return 'Answer Bank'
     case 'documents':
@@ -244,14 +321,14 @@ function NavButton({
   onClick: () => void
 }) {
   return (
-    <button className={active ? 'nav-button active' : 'nav-button'} onClick={onClick}>
+    <button className={active ? 'nav-button active' : 'nav-button'} aria-label={label} title={label} onClick={onClick}>
       {icon}
       <span>{label}</span>
     </button>
   )
 }
 
-function AuthScreen({ onAuthenticated }: { onAuthenticated: (user: AppUser) => void }) {
+function AuthScreen({ inviteToken, onAuthenticated }: { inviteToken: string; onAuthenticated: (user: AppUser) => void }) {
   const [mode, setMode] = useState<'signin' | 'create'>('create')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -266,11 +343,12 @@ function AuthScreen({ onAuthenticated }: { onAuthenticated: (user: AppUser) => v
       const nextUser =
         mode === 'create'
           ? isSupabaseConfigured()
-            ? await createSupabaseAccount(email, password, displayName, workspaceName)
+            ? await createSupabaseAccount(email, password, displayName, workspaceName, inviteToken || undefined)
             : await createLocalAccount(email, password, displayName, workspaceName)
           : isSupabaseConfigured()
-            ? await signInSupabase(email, password)
+            ? await signInSupabase(email, password, inviteToken || undefined)
             : await signInLocal(email, password)
+      if (inviteToken) window.history.replaceState({}, '', window.location.pathname)
       onAuthenticated(nextUser)
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Something went wrong.')
@@ -285,8 +363,14 @@ function AuthScreen({ onAuthenticated }: { onAuthenticated: (user: AppUser) => v
             <FolderLock size={22} />
           </div>
           <div>
-            <h1>Grant Dashboard</h1>
-            <p>{isSupabaseConfigured() ? 'Password-protected shared workspaces' : 'Password-protected local workspaces'}</p>
+            <h1>{inviteToken ? 'Join the workspace' : 'Grant Dashboard'}</h1>
+            <p>
+              {inviteToken
+                ? 'Use your own account to collaborate in the shared workspace.'
+                : isSupabaseConfigured()
+                  ? 'Password-protected shared workspaces'
+                  : 'Password-protected local workspaces'}
+            </p>
           </div>
         </div>
 
@@ -319,16 +403,18 @@ function AuthScreen({ onAuthenticated }: { onAuthenticated: (user: AppUser) => v
                 Name
                 <input value={displayName} onChange={(event) => setDisplayName(event.target.value)} />
               </label>
-              <label>
-                Workspace
-                <input value={workspaceName} onChange={(event) => setWorkspaceName(event.target.value)} />
-              </label>
+              {!inviteToken && (
+                <label>
+                  Workspace
+                  <input value={workspaceName} onChange={(event) => setWorkspaceName(event.target.value)} />
+                </label>
+              )}
             </>
           )}
           {error && <p className="form-error">{error}</p>}
           <button className="primary-button" type="submit">
             <Shield size={18} />
-            {mode === 'create' ? 'Create workspace' : 'Sign in'}
+            {inviteToken ? (mode === 'create' ? 'Create account and join' : 'Sign in and join') : mode === 'create' ? 'Create workspace' : 'Sign in'}
           </button>
         </form>
       </section>
@@ -336,7 +422,15 @@ function AuthScreen({ onAuthenticated }: { onAuthenticated: (user: AppUser) => v
   )
 }
 
-function GrantDashboard({ data, commit }: { data: AppData; commit: (data: AppData) => void }) {
+function GrantDashboard({
+  data,
+  commit,
+  onOpenApplication,
+}: {
+  data: AppData
+  commit: (data: AppData) => void
+  onOpenApplication: (grantId: string, applicationId?: string) => void
+}) {
   const [query, setQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState<GrantStatus | ''>('')
   const [priorityFilter, setPriorityFilter] = useState<Priority | ''>('')
@@ -371,7 +465,7 @@ function GrantDashboard({ data, commit }: { data: AppData; commit: (data: AppDat
       .filter((grant) => !folderFilter || (folderFilter === unfiledFolderFilter ? !grant.folderId : grant.folderId === folderFilter))
       .filter((grant) => !statusFilter || grant.status === statusFilter)
       .filter((grant) => !priorityFilter || grant.priority === priorityFilter)
-      .filter((grant) => !deadlineStatusFilter || grant.deadlineStatus === deadlineStatusFilter)
+      .filter((grant) => !deadlineStatusFilter || effectiveDeadlineStatus(grant) === deadlineStatusFilter)
       .sort((a, b) => b.fitScore - a.fitScore || priorityRank(a.priority) - priorityRank(b.priority))
   }, [data.grants, deadlineStatusFilter, folderById, folderFilter, priorityFilter, query, statusFilter])
 
@@ -418,7 +512,7 @@ function GrantDashboard({ data, commit }: { data: AppData; commit: (data: AppDat
           <Metric label="Total" value={data.grants.length.toString()} />
           <Metric label="High priority" value={data.grants.filter((grant) => grant.priority === 'High').length.toString()} />
           <Metric label="Working" value={data.grants.filter((grant) => grant.status === 'Working').length.toString()} />
-          <Metric label="Due soon" value={data.grants.filter((grant) => grant.deadlineStatus === 'Due soon').length.toString()} />
+          <Metric label="Due soon" value={data.grants.filter((grant) => effectiveDeadlineStatus(grant) === 'Due soon').length.toString()} />
         </div>
 
         <div className="toolbar">
@@ -511,7 +605,7 @@ function GrantDashboard({ data, commit }: { data: AppData; commit: (data: AppDat
                   </td>
                   <td>
                     <strong>{formatDeadline(grant)}</strong>
-                    <span>{grant.deadlineStatus}</span>
+                    <span>{effectiveDeadlineStatus(grant)}</span>
                   </td>
                   <td>
                     <PriorityBadge priority={grant.priority} />
@@ -550,16 +644,26 @@ function GrantDashboard({ data, commit }: { data: AppData; commit: (data: AppDat
                 <p className="eyebrow">{selectedGrant.funder}</p>
                 <h2>{selectedGrant.grantName}</h2>
               </div>
-              <button className="icon-button" title="Edit grant" onClick={() => setDraftGrant(selectedGrant)}>
-                <SquarePen size={18} />
-              </button>
+              <div className="button-row">
+                <button className="primary-button" onClick={() => onOpenApplication(selectedGrant.id, data.applications.find((item) => item.grantId === selectedGrant.id)?.id)}>
+                  <FileText size={16} />
+                  Work on application
+                </button>
+                <button className="icon-button" title="Edit grant" onClick={() => setDraftGrant(selectedGrant)}>
+                  <SquarePen size={18} />
+                </button>
+              </div>
             </div>
             <div className="detail-stack">
               <Detail label="Amount" value={selectedGrant.amount} />
               <Detail label="Folder" value={folderById.get(selectedGrant.folderId) || 'Unfiled'} />
               <Detail label="Deadline" value={formatDeadline(selectedGrant)} />
               <Detail label="Deadline note" value={selectedGrant.deadlineLabel} />
-              <Detail label="Deadline status" value={selectedGrant.deadlineStatus} />
+              <Detail label="Deadline status" value={effectiveDeadlineStatus(selectedGrant)} />
+              <Detail
+                label="Applications"
+                value={data.applications.filter((application) => application.grantId === selectedGrant.id).length.toString()}
+              />
               <Detail label="Geography" value={selectedGrant.geography} />
               <Detail label="Eligibility" value={selectedGrant.eligibility} />
               <Detail label="Why it fits" value={selectedGrant.fitReason} />
@@ -598,7 +702,9 @@ function GrantDashboard({ data, commit }: { data: AppData; commit: (data: AppDat
               aria-label="Deadline date and time"
               type="datetime-local"
               value={toDeadlineInputValue(draftGrant.deadline || '')}
-              onChange={(event) => setDraftGrant({ ...draftGrant, deadline: event.target.value, deadlineLabel: '' })}
+              onChange={(event) =>
+                setDraftGrant({ ...draftGrant, deadline: event.target.value, deadlineLabel: '', deadlineStatus: 'Open' })
+              }
             />
           </div>
           <div className="form-row">
@@ -609,7 +715,7 @@ function GrantDashboard({ data, commit }: { data: AppData; commit: (data: AppDat
                 setDraftGrant({ ...draftGrant, deadlineStatus: event.target.value as GrantLead['deadlineStatus'] })
               }
             >
-              {deadlineStatusOptions.map((statusOption) => (
+              {deadlineModeOptions.map((statusOption) => (
                 <option key={statusOption}>{statusOption}</option>
               ))}
             </select>
@@ -655,7 +761,22 @@ function GrantDashboard({ data, commit }: { data: AppData; commit: (data: AppDat
               value={draftGrant.fitScore ?? ''}
               onChange={(event) => setDraftGrant({ ...draftGrant, fitScore: Number(event.target.value) })}
             />
+            <input
+              placeholder="Category"
+              value={draftGrant.category || ''}
+              onChange={(event) => setDraftGrant({ ...draftGrant, category: event.target.value })}
+            />
           </div>
+          <input
+            placeholder="Geography"
+            value={draftGrant.geography || ''}
+            onChange={(event) => setDraftGrant({ ...draftGrant, geography: event.target.value })}
+          />
+          <textarea
+            placeholder="Eligibility"
+            value={draftGrant.eligibility || ''}
+            onChange={(event) => setDraftGrant({ ...draftGrant, eligibility: event.target.value })}
+          />
           <textarea
             placeholder="Why it fits"
             value={draftGrant.fitReason || ''}
@@ -665,6 +786,37 @@ function GrantDashboard({ data, commit }: { data: AppData; commit: (data: AppDat
             placeholder="Next action"
             value={draftGrant.nextAction || ''}
             onChange={(event) => setDraftGrant({ ...draftGrant, nextAction: event.target.value })}
+          />
+          <textarea
+            placeholder="Notes"
+            value={draftGrant.notes || ''}
+            onChange={(event) => setDraftGrant({ ...draftGrant, notes: event.target.value })}
+          />
+          <div className="form-row">
+            <input
+              type="url"
+              placeholder="Source URL"
+              value={draftGrant.sourceUrl || ''}
+              onChange={(event) => setDraftGrant({ ...draftGrant, sourceUrl: event.target.value })}
+            />
+            <input
+              placeholder="Source label"
+              value={draftGrant.sourceLabel || ''}
+              onChange={(event) => setDraftGrant({ ...draftGrant, sourceLabel: event.target.value })}
+            />
+          </div>
+          <input
+            placeholder="Tags, separated by commas"
+            value={(draftGrant.tags || []).join(', ')}
+            onChange={(event) =>
+              setDraftGrant({
+                ...draftGrant,
+                tags: event.target.value
+                  .split(',')
+                  .map((tag) => tag.trim())
+                  .filter(Boolean),
+              })
+            }
           />
           <button className="primary-button" type="submit">
             <Plus size={17} />
@@ -702,9 +854,22 @@ function PriorityBadge({ priority }: { priority: Priority }) {
 function formatDeadline(grant: GrantLead) {
   const exactDeadline = formatDeadlineValue(grant.deadline)
   if (exactDeadline) return exactDeadline
-  if (grant.deadlineStatus === 'Rolling') return 'Rolling'
-  if (grant.deadlineStatus === 'Closed') return 'Closed; date not recorded'
+  const status = effectiveDeadlineStatus(grant)
+  if (status === 'Rolling') return 'Rolling'
+  if (status === 'Closed') return 'Closed; date not recorded'
   return 'Deadline not published'
+}
+
+function effectiveDeadlineStatus(grant: GrantLead): GrantLead['deadlineStatus'] {
+  if (grant.deadlineStatus === 'Rolling' || grant.deadlineStatus === 'Closed') return grant.deadlineStatus
+  if (!grant.deadline) return 'Open'
+
+  const deadline = new Date(/T\d{2}:\d{2}/.test(grant.deadline) ? grant.deadline : `${grant.deadline}T23:59:59`)
+  if (Number.isNaN(deadline.getTime())) return 'Open'
+  const remainingDays = (deadline.getTime() - Date.now()) / 86_400_000
+  if (remainingDays < 0) return 'Closed'
+  if (remainingDays <= 14) return 'Due soon'
+  return 'Open'
 }
 
 function formatDeadlineValue(value: string) {
@@ -742,149 +907,9 @@ function priorityRank(priority: Priority) {
   return priority === 'High' ? 0 : priority === 'Medium' ? 1 : 2
 }
 
-function AnswerBank({ data, commit }: { data: AppData; commit: (data: AppData) => void }) {
-  const [query, setQuery] = useState('')
-  const [typeFilter, setTypeFilter] = useState('All')
-  const [draft, setDraft] = useState<Partial<AnswerRecord>>({})
-
-  const questionTypes = useMemo(
-    () => ['All', ...Array.from(new Set(data.answers.map((answer) => answer.questionType))).sort()],
-    [data.answers],
-  )
-
-  const answers = useMemo(() => {
-    const needle = query.trim().toLowerCase()
-    return data.answers
-      .filter((answer) => typeFilter === 'All' || answer.questionType === typeFilter)
-      .filter((answer) => {
-        const haystack = [
-          answer.questionType,
-          answer.exactQuestion,
-          answer.funder,
-          answer.grantName,
-          answer.finalAnswer,
-          answer.tags.join(' '),
-        ]
-          .join(' ')
-          .toLowerCase()
-        return !needle || haystack.includes(needle)
-      })
-      .sort((a, b) => a.questionType.localeCompare(b.questionType) || a.funder.localeCompare(b.funder))
-  }, [data.answers, query, typeFilter])
-
-  function saveAnswer(event: FormEvent) {
-    event.preventDefault()
-    if (!draft.questionType || !draft.finalAnswer) return
-    const answer: AnswerRecord = {
-      id: draft.id || crypto.randomUUID(),
-      questionType: draft.questionType,
-      exactQuestion: draft.exactQuestion || '',
-      funder: draft.funder || '',
-      grantName: draft.grantName || '',
-      wordLimit: draft.wordLimit || '',
-      finalAnswer: draft.finalAnswer,
-      tags: typeof draft.tags === 'string' ? [] : draft.tags || [],
-      lastUsed: draft.lastUsed || '',
-      quality: draft.quality || 'Draft',
-      createdAt: draft.createdAt || new Date().toISOString().slice(0, 10),
-    }
-    const exists = data.answers.some((item) => item.id === answer.id)
-    commit({
-      ...data,
-      answers: exists ? data.answers.map((item) => (item.id === answer.id ? answer : item)) : [answer, ...data.answers],
-    })
-    setDraft({})
-  }
-
-  return (
-    <div className="content-grid answer-grid">
-      <section className="panel">
-        <div className="toolbar">
-          <label className="search-box">
-            <Search size={17} />
-            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search answers" />
-          </label>
-          <label className="select-control">
-            <ListFilter size={17} />
-            <select value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)}>
-              {questionTypes.map((type) => (
-                <option key={type}>{type}</option>
-              ))}
-            </select>
-          </label>
-        </div>
-        <div className="answer-list">
-          {answers.map((answer) => (
-            <article className="answer-item" key={answer.id}>
-              <div className="answer-meta">
-                <strong>{answer.questionType}</strong>
-                <span>{[answer.funder, answer.grantName, answer.wordLimit].filter(Boolean).join(' / ')}</span>
-              </div>
-              {answer.exactQuestion && <p className="question-text">{answer.exactQuestion}</p>}
-              <pre>{answer.finalAnswer}</pre>
-              <div className="answer-actions">
-                <button className="secondary-button" onClick={() => void navigator.clipboard.writeText(answer.finalAnswer)}>
-                  <Clipboard size={16} />
-                  Copy
-                </button>
-                <button className="secondary-button" onClick={() => setDraft(answer)}>
-                  <SquarePen size={16} />
-                  Edit
-                </button>
-              </div>
-            </article>
-          ))}
-          {!answers.length && <p className="empty-state">No saved answers yet.</p>}
-        </div>
-      </section>
-
-      <aside className="panel">
-        <form className="stacked-form" onSubmit={saveAnswer}>
-          <h3>{draft.id ? 'Edit answer' : 'Add answer'}</h3>
-          <input
-            placeholder="Question type"
-            value={draft.questionType || ''}
-            onChange={(event) => setDraft({ ...draft, questionType: event.target.value })}
-          />
-          <input
-            placeholder="Exact question"
-            value={draft.exactQuestion || ''}
-            onChange={(event) => setDraft({ ...draft, exactQuestion: event.target.value })}
-          />
-          <div className="form-row">
-            <input
-              placeholder="Funder"
-              value={draft.funder || ''}
-              onChange={(event) => setDraft({ ...draft, funder: event.target.value })}
-            />
-            <input
-              placeholder="Grant"
-              value={draft.grantName || ''}
-              onChange={(event) => setDraft({ ...draft, grantName: event.target.value })}
-            />
-          </div>
-          <input
-            placeholder="Word limit"
-            value={draft.wordLimit || ''}
-            onChange={(event) => setDraft({ ...draft, wordLimit: event.target.value })}
-          />
-          <textarea
-            className="large-textarea"
-            placeholder="Verbatim final answer"
-            value={draft.finalAnswer || ''}
-            onChange={(event) => setDraft({ ...draft, finalAnswer: event.target.value })}
-          />
-          <button className="primary-button" type="submit">
-            <Plus size={17} />
-            Save answer
-          </button>
-        </form>
-      </aside>
-    </div>
-  )
-}
-
 function DocumentsView({ data, commit }: { data: AppData; commit: (data: AppData) => void }) {
+  const grantsById = new Map(data.grants.map((grant) => [grant.id, grant]))
+
   function updateDocument(id: string, patch: Partial<DocumentItem>) {
     commit({ ...data, documents: data.documents.map((document) => (document.id === id ? { ...document, ...patch } : document)) })
   }
@@ -911,12 +936,13 @@ function DocumentsView({ data, commit }: { data: AppData; commit: (data: AppData
         </button>
       </div>
       <div className="table-wrap">
-        <table>
+        <table className="document-table">
           <thead>
             <tr>
               <th>Name</th>
               <th>Category</th>
               <th>Status</th>
+              <th>Application</th>
               <th>Owner</th>
               <th>Notes</th>
             </tr>
@@ -939,6 +965,25 @@ function DocumentsView({ data, commit }: { data: AppData; commit: (data: AppData
                   </select>
                 </td>
                 <td>
+                  <select
+                    value={document.relatedApplicationId || ''}
+                    onChange={(event) => {
+                      const relatedApplication = data.applications.find((application) => application.id === event.target.value)
+                      updateDocument(document.id, {
+                        relatedApplicationId: relatedApplication?.id,
+                        relatedGrantId: relatedApplication?.grantId,
+                      })
+                    }}
+                  >
+                    <option value="">Workspace-wide</option>
+                    {data.applications.map((application) => (
+                      <option key={application.id} value={application.id}>
+                        {grantsById.get(application.grantId)?.grantName || 'Grant'} / {application.cycle}
+                      </option>
+                    ))}
+                  </select>
+                </td>
+                <td>
                   <input value={document.owner} onChange={(event) => updateDocument(document.id, { owner: event.target.value })} />
                 </td>
                 <td>
@@ -948,7 +993,7 @@ function DocumentsView({ data, commit }: { data: AppData; commit: (data: AppData
             ))}
             {!data.documents.length && (
               <tr>
-                <td colSpan={5} className="empty-cell">
+                <td colSpan={6} className="empty-cell">
                   No documents yet.
                 </td>
               </tr>
@@ -1001,7 +1046,24 @@ function TasksView({ data, commit }: { data: AppData; commit: (data: AppData) =>
                 <Check size={16} />
               </button>
               <input value={task.title} onChange={(event) => updateTask(task.id, { title: event.target.value })} />
-              <span>{task.relatedGrantId ? grantsById.get(task.relatedGrantId)?.grantName : ''}</span>
+              <select
+                aria-label="Related application"
+                value={task.relatedApplicationId || ''}
+                onChange={(event) => {
+                  const relatedApplication = data.applications.find((application) => application.id === event.target.value)
+                  updateTask(task.id, {
+                    relatedApplicationId: relatedApplication?.id,
+                    relatedGrantId: relatedApplication?.grantId,
+                  })
+                }}
+              >
+                <option value="">No application</option>
+                {data.applications.map((application) => (
+                  <option key={application.id} value={application.id}>
+                    {grantsById.get(application.grantId)?.grantName || 'Grant'} / {application.cycle}
+                  </option>
+                ))}
+              </select>
               <input type="date" value={task.dueDate} onChange={(event) => updateTask(task.id, { dueDate: event.target.value })} />
               <input value={task.owner} placeholder="Owner" onChange={(event) => updateTask(task.id, { owner: event.target.value })} />
             </article>
@@ -1012,10 +1074,20 @@ function TasksView({ data, commit }: { data: AppData; commit: (data: AppData) =>
   )
 }
 
-function SettingsView({ data, commit }: { data: AppData; commit: (data: AppData) => void }) {
+function SettingsView({ data, user, commit }: { data: AppData; user: AppUser; commit: (data: AppData) => void }) {
   const [importText, setImportText] = useState('')
   const [message, setMessage] = useState('')
   const [folderLabel, setFolderLabel] = useState('')
+  const [members, setMembers] = useState<Awaited<ReturnType<typeof loadWorkspaceMembers>>>([])
+  const [inviteUrl, setInviteUrl] = useState('')
+  const [inviteExpiresAt, setInviteExpiresAt] = useState('')
+
+  useEffect(() => {
+    if (user.mode !== 'supabase') return
+    void loadWorkspaceMembers(data.workspace.id)
+      .then(setMembers)
+      .catch((error) => setMessage(error instanceof Error ? error.message : 'Could not load workspace members.'))
+  }, [data.workspace.id, user.mode])
 
   function updateWorkspace(patch: Partial<AppData['workspace']>) {
     commit({ ...data, workspace: { ...data.workspace, ...patch } })
@@ -1063,10 +1135,12 @@ function SettingsView({ data, commit }: { data: AppData; commit: (data: AppData)
     setMessage('')
     try {
       const parsed = JSON.parse(importText)
-      const grants = Array.isArray(parsed) ? parsed : parsed.grants
-      const answers = Array.isArray(parsed.answers) ? parsed.answers : []
-      const documents = Array.isArray(parsed.documents) ? parsed.documents : []
-      const tasks = Array.isArray(parsed.tasks) ? parsed.tasks : []
+      const normalized = normalizeAppData(
+        Array.isArray(parsed)
+          ? { workspace: data.workspace, grants: parsed }
+          : { ...parsed, workspace: parsed.workspace || data.workspace },
+      )
+      const grants = normalized.grants
 
       if (!Array.isArray(grants)) {
         throw new Error('Import JSON must be an array of grants or an object with a grants array.')
@@ -1074,15 +1148,31 @@ function SettingsView({ data, commit }: { data: AppData; commit: (data: AppData)
 
       commit({
         ...data,
-        grants: [...grants.map((grant) => normalizeGrant(grant)), ...data.grants],
-        answers: [...answers, ...data.answers],
-        documents: [...documents, ...data.documents],
-        tasks: [...tasks, ...data.tasks],
+        folders: [...normalized.folders, ...data.folders],
+        grants: [...grants, ...data.grants],
+        applications: [...normalized.applications, ...data.applications],
+        questions: [...normalized.questions, ...data.questions],
+        answers: [...normalized.answers, ...data.answers],
+        documents: [...normalized.documents, ...data.documents],
+        tasks: [...normalized.tasks, ...data.tasks],
       })
       setImportText('')
-      setMessage(`Imported ${grants.length} grants${answers.length ? ` and ${answers.length} answers` : ''}.`)
+      setMessage(`Imported ${grants.length} grants and ${normalized.applications.length} applications.`)
     } catch (caught) {
       setMessage(caught instanceof Error ? caught.message : 'Import failed.')
+    }
+  }
+
+  async function createInvite() {
+    setMessage('')
+    try {
+      const invite = await createWorkspaceInvite(data.workspace.id)
+      setInviteUrl(invite.url)
+      setInviteExpiresAt(invite.expiresAt)
+      await navigator.clipboard.writeText(invite.url)
+      setMessage('Invitation link copied. Each teammate can create and use their own account.')
+    } catch (caught) {
+      setMessage(caught instanceof Error ? caught.message : 'Could not create an invitation.')
     }
   }
 
@@ -1130,6 +1220,38 @@ function SettingsView({ data, commit }: { data: AppData; commit: (data: AppData)
             Add folder
           </button>
         </form>
+      </section>
+
+      <section className="panel collaboration-panel">
+        <h2>Workspace access</h2>
+        {user.mode === 'supabase' ? (
+          <>
+            <div className="member-list">
+              {members.map((member) => (
+                <div className="member-item" key={member.userId}>
+                  <div>
+                    <strong>{member.displayName || member.email}</strong>
+                    <span>{member.email}</span>
+                  </div>
+                  <span className="member-role">{member.role}</span>
+                </div>
+              ))}
+            </div>
+            <button className="primary-button" onClick={() => void createInvite()}>
+              <Plus size={17} />
+              Create teammate invite
+            </button>
+            {inviteUrl && (
+              <label className="invite-link-field">
+                Share this link
+                <input readOnly value={inviteUrl} onFocus={(event) => event.currentTarget.select()} />
+                <span>Expires {new Date(inviteExpiresAt).toLocaleString()}</span>
+              </label>
+            )}
+          </>
+        ) : (
+          <p className="empty-state">Teammate accounts are available in the shared Supabase deployment.</p>
+        )}
       </section>
 
       <section className="panel">

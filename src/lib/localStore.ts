@@ -1,4 +1,17 @@
-import type { AppData, AppUser, DeadlineStatus, GrantLead, GrantStatus, Workspace, WorkspaceFolder } from '../types'
+import { questionCategories } from './questionCategories'
+import type {
+  AnswerRecord,
+  AppData,
+  ApplicationQuestion,
+  AppUser,
+  DeadlineStatus,
+  GrantApplication,
+  GrantLead,
+  GrantStatus,
+  QuestionCategory,
+  Workspace,
+  WorkspaceFolder,
+} from '../types'
 
 const accountKey = 'grant-dashboard:accounts:v1'
 const sessionKey = 'grant-dashboard:session:v1'
@@ -26,6 +39,8 @@ export function createBlankData(workspaceName: string): AppData {
     workspace,
     folders: [],
     grants: [],
+    applications: [],
+    questions: [],
     answers: [],
     documents: [],
     tasks: [],
@@ -173,6 +188,66 @@ export function normalizeGrant(partial: Partial<GrantLead>): GrantLead {
   }
 }
 
+export function normalizeApplication(partial: Partial<GrantApplication>): GrantApplication {
+  const now = new Date().toISOString()
+  return {
+    id: partial.id || crypto.randomUUID(),
+    grantId: partial.grantId || '',
+    name: partial.name || 'Grant application',
+    cycle: partial.cycle || `${new Date().getFullYear()} cycle`,
+    status: normalizeApplicationStatus(partial.status),
+    owner: partial.owner || '',
+    portalUrl: partial.portalUrl || '',
+    deadline: partial.deadline || '',
+    submittedAt: partial.submittedAt || '',
+    notes: partial.notes || '',
+    createdAt: partial.createdAt || now,
+    updatedAt: partial.updatedAt || now,
+  }
+}
+
+export function normalizeQuestion(partial: Partial<ApplicationQuestion>): ApplicationQuestion {
+  const now = new Date().toISOString()
+  return {
+    id: partial.id || crypto.randomUUID(),
+    applicationId: partial.applicationId || '',
+    position: Number.isFinite(Number(partial.position)) ? Number(partial.position) : 0,
+    exactQuestion: partial.exactQuestion || '',
+    category: normalizeQuestionCategory(partial.category),
+    wordLimit: Math.max(0, Number(partial.wordLimit) || 0),
+    response: partial.response || '',
+    responseStatus: partial.responseStatus === 'Final' ? 'Final' : 'Draft',
+    createdAt: partial.createdAt || now,
+    updatedAt: partial.updatedAt || now,
+  }
+}
+
+type LegacyAnswer = Partial<AnswerRecord> & {
+  funder?: string
+  grantName?: string
+  wordLimit?: number | string
+  quality?: string
+}
+
+export function normalizeAnswerRecord(partial: LegacyAnswer): AnswerRecord {
+  return {
+    id: partial.id || crypto.randomUUID(),
+    grantId: partial.grantId || '',
+    applicationId: partial.applicationId || '',
+    questionId: partial.questionId || '',
+    questionType: normalizeQuestionCategory(partial.questionType),
+    exactQuestion: partial.exactQuestion || '',
+    wordLimit: Math.max(0, Number(partial.wordLimit) || 0),
+    finalAnswer: partial.finalAnswer || '',
+    sourceStatus:
+      partial.sourceStatus === 'Final' || partial.sourceStatus === 'Submitted' ? partial.sourceStatus : 'Legacy',
+    createdAt: partial.createdAt || new Date().toISOString(),
+    createdBy: partial.createdBy || '',
+    legacyFunder: partial.legacyFunder || partial.funder || '',
+    legacyGrantName: partial.legacyGrantName || partial.grantName || '',
+  }
+}
+
 export function normalizeAppData(partial: Partial<AppData>): AppData {
   const workspace: Workspace = {
     id: partial.workspace?.id || crypto.randomUUID(),
@@ -186,16 +261,28 @@ export function normalizeAppData(partial: Partial<AppData>): AppData {
     : []
   const folderIds = new Set(folders.map((folder) => folder.id))
 
+  const grants = Array.isArray(partial.grants)
+    ? partial.grants.map((grant) => {
+        const normalized = normalizeGrant(grant)
+        return folderIds.has(normalized.folderId) ? normalized : { ...normalized, folderId: '' }
+      })
+    : []
+  const grantIds = new Set(grants.map((grant) => grant.id))
+  const applications = Array.isArray(partial.applications)
+    ? partial.applications.map(normalizeApplication).filter((application) => grantIds.has(application.grantId))
+    : []
+  const applicationIds = new Set(applications.map((application) => application.id))
+  const questions = Array.isArray(partial.questions)
+    ? partial.questions.map(normalizeQuestion).filter((question) => applicationIds.has(question.applicationId))
+    : []
+
   return {
     workspace,
     folders,
-    grants: Array.isArray(partial.grants)
-      ? partial.grants.map((grant) => {
-          const normalized = normalizeGrant(grant)
-          return folderIds.has(normalized.folderId) ? normalized : { ...normalized, folderId: '' }
-        })
-      : [],
-    answers: Array.isArray(partial.answers) ? partial.answers : [],
+    grants,
+    applications,
+    questions,
+    answers: Array.isArray(partial.answers) ? partial.answers.map((answer) => normalizeAnswerRecord(answer)) : [],
     documents: Array.isArray(partial.documents) ? partial.documents : [],
     tasks: Array.isArray(partial.tasks) ? partial.tasks : [],
   }
@@ -220,4 +307,22 @@ function normalizeGrantStatus(status: GrantStatus | string | undefined): GrantSt
 function normalizeDeadlineStatus(status: DeadlineStatus | string | undefined): DeadlineStatus {
   if (status === 'Due soon' || status === 'Rolling' || status === 'Closed') return status
   return 'Open'
+}
+
+function normalizeApplicationStatus(status: GrantApplication['status'] | string | undefined): GrantApplication['status'] {
+  if (
+    status === 'Planning' ||
+    status === 'Internal review' ||
+    status === 'Ready to submit' ||
+    status === 'Submitted' ||
+    status === 'Awarded' ||
+    status === 'Declined'
+  ) {
+    return status
+  }
+  return 'Drafting'
+}
+
+function normalizeQuestionCategory(category: QuestionCategory | string | undefined): QuestionCategory {
+  return questionCategories.includes(category as QuestionCategory) ? (category as QuestionCategory) : 'Other'
 }
